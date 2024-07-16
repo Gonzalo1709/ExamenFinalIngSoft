@@ -131,6 +131,13 @@ def agregar_contacto():
     db.session.commit()
     return "Contacto agregado", 200
 
+# Endpoint /billetera/admin/dropDatabase DELETE
+@app.route('/billetera/admin/dropDatabase', methods=['DELETE'])
+def drop_database():
+    db.drop_all()
+    db.create_all()
+    return "Database dropped"
+
 # Endpoint /billetera/admin/agregarSaldo POST
 # Body: {minumero: string, valor: float}
 @app.route('/billetera/admin/agregarSaldo', methods=['POST'])
