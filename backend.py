@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from flask import request, jsonify, request, Flask
 from flask_sqlalchemy import SQLAlchemy
-import datetime
+from sqlalchemy.orm.attributes import flag_modified
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -34,17 +35,28 @@ class CuentaUsuario(db.Model):
     Numero = db.Column(db.String, primary_key=True)
     Saldo = db.Column(db.Float)
     NumerosContacto = db.Column(db.JSON)
-    historialOperaciones = db.relationship('Operacion', foreign_keys=[Operacion.CuentaOrigen, Operacion.CuentaDestino], backref='cuenta_usuario', lazy=True)
+    # Separate relationships for clarity and to resolve ambiguity
+    operacionesEnviadas = db.relationship('Operacion',
+                                          foreign_keys='Operacion.CuentaOrigen',
+                                          backref=db.backref('cuentaOrigen', lazy=True),
+                                          lazy='dynamic')
+    operacionesRecibidas = db.relationship('Operacion',
+                                           foreign_keys='Operacion.CuentaDestino',
+                                           backref=db.backref('cuentaDestino', lazy=True),
+                                           lazy='dynamic')
 
     def transferir(self, cuentaDestino, monto):
         if self.Saldo < monto:
             return "Saldo insuficiente"
         self.Saldo -= monto
         cuentaDestino.Saldo += monto
-        operacion = Operacion(NumeroOrigen=self.Numero, NumeroDestino=cuentaDestino.Numero, Monto=monto, Fecha=datetime.now())
+        operacion = Operacion(CuentaOrigen=self.Numero, CuentaDestino=cuentaDestino.Numero, Monto=monto, Fecha=datetime.now())
         db.session.add(operacion)
         db.session.commit()
         return "Transferencia exitosa"
+    
+    def historialOperaciones(self):
+        return self.operacionesEnviadas.all() + self.operacionesRecibidas.all()
     
     def __repr__(self):
         return f'Cuenta: {self.Numero} Saldo: {self.Saldo} Contactos: {self.NumerosContacto}'
@@ -61,7 +73,8 @@ def get_contactos():
         return "Cuenta no encontrada"
     return jsonify(cuenta.NumerosContacto)
 
-# Endpoint /billetera/pagar?minumero&numerodestino&valor
+# Endpoint /billetera/pagar
+# Params: minumero, numerodestino, valor
 @app.route('/billetera/pagar', methods=['POST'])
 def pagar():
     data = request.json
@@ -72,18 +85,63 @@ def pagar():
     return cuentaOrigen.transferir(cuentaDestino, data['valor'])
 
 # Endpoint /billetera/historial?minumero
+# Params: minumero
 @app.route('/billetera/historial', methods=['GET'])
 def get_historial():
     numero = request.args.get('minumero')
     cuenta = CuentaUsuario.query.filter_by(Numero=numero).first()
     if cuenta is None:
         return "Cuenta no encontrada"
-    return jsonify([str(operacion) for operacion in cuenta.historialOperaciones])
+    return jsonify([str(operacion) for operacion in cuenta.historialOperaciones()])
+
+# Endpoint /billetera/saldo?minumero GET
+# Params: minumero
+@app.route('/billetera/saldo', methods=['GET'])
+def get_saldo():
+    numero = request.args.get('minumero')
+    cuenta = CuentaUsuario.query.filter_by(Numero=numero).first()
+    if cuenta is None:
+        return "Cuenta no encontrada"
+    return jsonify(cuenta.Saldo)
+
+# Endpoint /billetera/crear POST
+# Body: {numero: string}
+@app.route('/billetera/crear', methods=['POST'])
+def crear_cuenta():
+    data = request.json
+    cuenta = CuentaUsuario(Numero=data['numero'], Saldo=0, NumerosContacto={})
+    db.session.add(cuenta)
+    db.session.commit()
+    return "Cuenta creada"
+
+# Endpoint /billetera/agregarContacto POST
+# Body: {minumero: string, numerodestino: string, nombre: string}
+@app.route('/billetera/agregarContacto', methods=['POST'])
+def agregar_contacto():
+    data = request.json
+    cuenta = CuentaUsuario.query.filter_by(Numero=data['minumero']).first()
+    if cuenta is None:
+        return "Cuenta no encontrada", 404
+    if 'NumerosContacto' not in cuenta.__dict__ or not isinstance(cuenta.NumerosContacto, dict):
+        cuenta.NumerosContacto = {}  
+    cuenta.NumerosContacto[data['numerodestino']] = data['nombre']
+    flag_modified(cuenta, 'NumerosContacto')  
+    db.session.commit()
+    return "Contacto agregado", 200
+
+# Endpoint /billetera/admin/agregarSaldo POST
+# Body: {minumero: string, valor: float}
+@app.route('/billetera/admin/agregarSaldo', methods=['POST'])
+def agregar_saldo():
+    data = request.json
+    cuenta = CuentaUsuario.query.filter_by(Numero=data['minumero']).first()
+    if cuenta is None:
+        return "Cuenta no encontrada", 404
+    cuenta.Saldo += data['valor']
+    db.session.commit()
+    return "Saldo agregado", 200
 
 if __name__ == '__main__':
     app.run(debug=True)
     cuenta1 = CuentaUsuario(Numero='123', Saldo=100, NumerosContacto={'456': 'Juan'}, historialOperaciones=[])
     cuenta2 = CuentaUsuario(Numero='456', Saldo=100, NumerosContacto={'123': 'Pedro'}, historialOperaciones=[])
-    db.session.add(cuenta1)
-    db.session.add(cuenta2)
-    db.session.commit()
